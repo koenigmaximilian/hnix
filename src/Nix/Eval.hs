@@ -26,7 +26,6 @@ import           Control.Monad.Trans.Reader
 import           Data.Align.Key
 import           Data.Fix
 import           Data.Functor.Compose
-import qualified Data.HashMap.Lazy as M
 import           Data.List (intercalate, partition, foldl')
 import           Data.Maybe (fromMaybe, catMaybes)
 import           Data.Text (Text)
@@ -34,6 +33,7 @@ import qualified Data.Text as Text
 import           Data.These
 import           Data.Traversable (for)
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Expr
 import           Nix.Scope
 import           Nix.Stack
@@ -73,8 +73,7 @@ type MonadNixEval e v t m =
     (MonadEval v m, Scoped e t m, MonadThunk v t m, MonadFix m,
      ConvertValue v Bool,
      ConvertValue v [t],
-     ConvertValue v (AttrSet t),
-     ConvertValue v (AttrSet t, AttrSet SourcePos))
+     ConvertValue v (AttrSet t), Show t, AttrSetEmbeds t)
 
 -- | Evaluate an nix expression, with a given NThunkSet as environment
 evalExpr :: MonadNixEval e v t m => NExpr -> m v
@@ -124,22 +123,20 @@ eval (NList l) = do
 
 eval (NSet binds) = do
     traceM "NSet..1"
-    (s, p) <- evalBinds True False binds
-    traceM $ "NSet..2: s = " ++ show (void s)
-    traceM $ "NSet..2: p = " ++ show (void p)
-    return $ ofVal (s, p)
+    s <- evalBinds True False binds
+    traceM $ "NSet..2: s = " ++ show s
+    return $ ofVal s
 
 eval (NRecSet binds) = do
     traceM "NRecSet..1"
-    (s, p) <- evalBinds True True binds
-    traceM $ "NRecSet..2: s = " ++ show (void s)
-    traceM $ "NRecSet..2: p = " ++ show (void p)
-    return $ ofVal (s, p)
+    s <- evalBinds True True binds
+    traceM $ "NRecSet..2: s = " ++ show s
+    return $ ofVal s
 
 eval (NLet binds e) = do
     traceM "Let..1"
-    (s, _) <- evalBinds True True binds
-    traceM $ "Let..2: s = " ++ show (void s)
+    s <- evalBinds True True binds
+    traceM $ "Let..2: s = " ++ show s
     pushScope s e
 
 eval (NIf cond t f) = cond >>= \v -> evalIf v t f
@@ -167,6 +164,8 @@ attrSetAlter :: forall e v t m. MonadNixEval e v t m
              -> m v
              -> m (AttrSet (m v))
 attrSetAlter [] _ _ = evalError @v "invalid selector with no components"
+attrSetAlter _ _ _ = undefined
+{-
 attrSetAlter (p:ps) m val = case M.lookup p m of
     Nothing
         | null ps   -> go
@@ -184,12 +183,15 @@ attrSetAlter (p:ps) m val = case M.lookup p m of
     -- jww (2018-04-13): Need to record positions for attr paths as well
     recurse s = attrSetAlter ps s val <&> \m' ->
         M.insert p (ofVal . fmap (value @_ @_ @m) <$> sequence m') m
+-}
 
 evalBinds :: forall e v t m. MonadNixEval e v t m
           => Bool
           -> Bool
           -> [Binding (m v)]
-          -> m (AttrSet t, AttrSet SourcePos)
+          -> m (AttrSet t)
+evalBinds allowDynamic recursive binds = undefined
+{-
 evalBinds allowDynamic recursive binds = do
     outsideScope <- currentScopes @_ @t
     buildResult . concat =<< mapM (go outsideScope) (moveOverridesLast binds)
@@ -240,7 +242,7 @@ evalBinds allowDynamic recursive binds = do
                     Just v -> force v pure)
 
     buildResult :: [([Text], Maybe SourcePos, m v)]
-                -> m (AttrSet t, AttrSet SourcePos)
+                -> m (AttrSet t)
     buildResult bindings = do
         s <- foldM insert M.empty bindings
         scope <- currentScopes @_ @t
@@ -258,21 +260,24 @@ evalBinds allowDynamic recursive binds = do
         thunk . withScopes scope . pushScope attrs $ f
 
     insert m (path, _, value) = attrSetAlter path m value
+-}
 
 evalSelect :: forall e v t m. MonadNixEval e v t m
            => m v
            -> NAttrPath (m v)
            -> m (Either (v, [Text]) v)
-evalSelect aset attr =
+evalSelect aset attr = undefined
+{-
     join $ extract <$> aset <*> evalSelector True attr
   where
     extract v [] = return $ Right v
     extract x (k:ks) =
-        case wantVal @_ @(AttrSet t, AttrSet SourcePos) x of
+        case wantVal @_ @(AttrSet t) x of
             Just (s, p) -> case M.lookup k s of
                 Just v  -> force v $ extract ?? ks
                 Nothing -> return $ Left (ofVal (s, p), k:ks)
             Nothing -> return $ Left (x, k:ks)
+-}
 
 evalSelector :: MonadEval v m
              => Bool -> NAttrPath (m v) -> m [Text]
@@ -336,7 +341,8 @@ assembleString = \case
 
 buildArgument :: forall e v t m. MonadNixEval e v t m
               => Params (m v) -> m v -> m (AttrSet t)
-buildArgument params arg = case params of
+buildArgument params arg = undefined -- case params of
+{-
     Param name -> M.singleton name <$> thunk arg
     ParamSet s isVariadic m ->
         arg >>= \v -> case wantVal v of
@@ -368,6 +374,7 @@ buildArgument params arg = case params of
                | otherwise  ->
                  const $ evalError @v $ "Unexpected parameter: " ++ show k
         These x _ -> const (pure x)
+-}
 
 -----
 

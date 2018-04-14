@@ -20,17 +20,13 @@ import           Control.Monad.Fix
 import           Control.Monad.IO.Class
 import           Data.Aeson (toJSON)
 import qualified Data.Aeson as A
-import qualified Data.Aeson.Encoding as A
 import           Data.Fix
 import           Data.Functor.Compose
-import           Data.HashMap.Lazy (HashMap)
-import qualified Data.HashMap.Lazy as M
-import           Data.List (sortOn)
 import           Data.Text (Text)
 import qualified Data.Vector as V
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Effects
-import {-# SOURCE #-} Nix.Entry
 import           Nix.Expr.Types
 import           Nix.Expr.Types.Annotated
 import           Nix.Normal
@@ -39,6 +35,7 @@ import           Nix.Thunk
 import           Nix.Utils
 import           Nix.Value
 import           Text.Megaparsec.Pos
+import {-# SOURCE #-} Nix.Entry
 
 class FromNix a m v where
     fromNix    :: MonadNix e m => v -> m a
@@ -159,17 +156,17 @@ instance FromNix [NThunk m] m (NValue m) where
         Just b -> pure b
         v -> throwError $ "Expected a list, but saw: " ++ show v
 
-instance FromNix (HashMap Text (NValueNF m)) m (NValueNF m) where
+instance FromNix (AttrSet (NValueNF m)) m (NValueNF m) where
     fromNixMay = \case
-        Fix (NVSet s _) -> pure $ Just s
+        Fix (NVSet s) -> pure $ Just s
         _ -> pure Nothing
     fromNix = fromNixMay >=> \case
         Just b -> pure b
         v -> throwError $ "Expected an attrset, but saw: " ++ show v
 
-instance FromNix (HashMap Text (NThunk m)) m (NValue m) where
+instance FromNix (AttrSet (NThunk m)) m (NValue m) where
     fromNixMay = \case
-        NVSet s _ -> pure $ Just s
+        NVSet s -> pure $ Just s
         _ -> pure Nothing
     fromNix = fromNixMay >=> \case
         Just b -> pure b
@@ -199,16 +196,6 @@ instance (MonadCatch m, MonadFix m, MonadIO m,
     fromNix    = eval Nothing [] >=> fromNix
     fromNixMay = eval Nothing [] >=> fromNixMay
 
-toEncodingSorted :: A.Value -> A.Encoding
-toEncodingSorted = \case
-    A.Object m ->
-        A.pairs . mconcat
-                . fmap (\(k, v) -> A.pair k $ toEncodingSorted v)
-                . sortOn fst
-                $ M.toList m
-    A.Array l -> A.list toEncodingSorted $ V.toList l
-    v -> A.toEncoding v
-
 instance FromNix A.Value m (NValueNF m) where
     fromNixMay = \case
         Fix (NVConstant a) -> pure $ Just $ case a of
@@ -220,7 +207,7 @@ instance FromNix A.Value m (NValueNF m) where
         Fix (NVStr s _)     -> pure $ Just $ toJSON s
         Fix (NVList l)      -> fmap (A.Array . V.fromList) . sequence
                                   <$> traverse fromNixMay l
-        Fix (NVSet m _)     -> fmap A.Object . sequence <$> traverse fromNixMay m
+        Fix (NVSet m)       -> undefined -- fmap A.Object . sequence <$> traverse fromNixMay m
         Fix NVClosure {}    -> pure Nothing
         Fix (NVPath p)      -> Just . toJSON . unStorePath <$> addPath p
         Fix (NVBuiltin _ _) -> pure Nothing
@@ -280,12 +267,12 @@ instance (MonadThunk (NValue m) (NThunk m) m,
     toNix = fmap NVList . traverse toNix
 
 instance (MonadThunk (NValue m) (NThunk m) m, ToNix a m (NValueNF m))
-      => ToNix (HashMap Text a) m (NValueNF m) where
-    toNix = fmap (Fix . flip NVSet M.empty) . traverse toNix
+      => ToNix (AttrSet a) m (NValueNF m) where
+    toNix = undefined -- fmap (Fix . flip NVSet M.empty) . traverse toNix
 
 instance (MonadThunk (NValue m) (NThunk m) m, ToNix a m (NValue m))
-      => ToNix (HashMap Text a) m (NValue m) where
-    toNix = fmap (flip NVSet M.empty) . traverse toNix
+      => ToNix (AttrSet a) m (NValue m) where
+    toNix = undefined -- fmap (flip NVSet M.empty) . traverse toNix
 
 instance ToNix a m (NValue m) => ToNix a m (m (NValue m)) where
     toNix = pure . toNix

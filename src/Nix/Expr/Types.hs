@@ -24,24 +24,21 @@
 module Nix.Expr.Types where
 
 import           Codec.Serialise (Serialise)
-import qualified Codec.Serialise as Ser
 import           Control.DeepSeq
 import           Data.Binary (Binary)
-import qualified Data.Binary as Bin
 import           Data.Data
 import           Data.Eq.Deriving
 import           Data.Fix
 import           Data.Functor.Classes
-import           Data.Monoid
 import           Data.Text (Text, pack, unpack)
 import           Data.Traversable
 import           GHC.Exts
 import           GHC.Generics
 import           Language.Haskell.TH.Syntax
 import           Nix.Atoms
+import           Nix.AttrSet ()
 import           Nix.Parser.Library (SourcePos(..))
 import           Nix.Utils
-import           Text.Megaparsec.Pos
 import           Text.Show.Deriving
 import           Type.Reflection (eqTypeRep)
 import qualified Type.Reflection as Reflection
@@ -191,14 +188,6 @@ data NKeyName r
   | StaticKey !VarName !(Maybe SourcePos)
   deriving (Eq, Ord, Generic, Typeable, Data, Show, NFData, Serialise)
 
-instance Serialise Pos where
-    encode x = Ser.encode (unPos x)
-    decode = mkPos <$> Ser.decode
-
-instance Serialise SourcePos where
-    encode (SourcePos f l c) = Ser.encode f <> Ser.encode l <> Ser.encode c
-    decode = SourcePos <$> Ser.decode <*> Ser.decode <*> Ser.decode
-
 instance Generic1 NKeyName where
   type Rep1 NKeyName = NKeyName -- jww (2018-04-09): wrong
   from1 = id
@@ -294,10 +283,6 @@ $(deriveShow2 ''Antiquoted)
 instance (Binary v, Binary a) => Binary (Antiquoted v a)
 instance Binary a => Binary (NString a)
 instance Binary a => Binary (Binding a)
-instance Binary Pos where
-    put x = Bin.put (unPos x)
-    get = mkPos <$> Bin.get
-instance Binary SourcePos
 instance Binary a => Binary (NKeyName a)
 instance Binary a => Binary (Params a)
 instance Binary NAtom

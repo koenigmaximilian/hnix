@@ -17,6 +17,7 @@
 
 module Nix.Builtins (MonadBuiltins, baseEnv) where
 
+import           Control.Arrow (first)
 import           Control.Monad
 import           Control.Monad.Catch
 import           Control.Monad.Fix
@@ -37,7 +38,6 @@ import qualified Data.ByteString.Lazy as LBS
 import           Data.Char (isDigit)
 import           Data.Coerce
 import           Data.Foldable (foldlM, foldrM)
-import qualified Data.HashMap.Lazy as M
 import           Data.List
 import           Data.Maybe
 import           Data.Scientific
@@ -53,6 +53,7 @@ import qualified Data.Vector as V
 import           GHC.Stack.Types (HasCallStack)
 import           Language.Haskell.TH.Syntax (addDependentFile, runIO)
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Effects
 import           Nix.Eval
 import           Nix.Exec
@@ -77,14 +78,18 @@ type MonadBuiltins e m =
 baseEnv :: (MonadBuiltins e m, Scoped e (NThunk m) m)
         => m (Scopes m (NThunk m))
 baseEnv = do
-    ref <- thunk $ flip NVSet M.empty <$> builtins
-    lst <- ([("builtins", ref)] ++) <$> topLevelBuiltins
-    pushScope (M.fromList lst) currentScopes
+    ref <- thunk $ NVSet <$> builtins
+    lst <- ([([("builtins", Nothing)], ref)] ++) <$> topLevelBuiltins
+    pushScope (attrsetFromList lst) currentScopes
   where
     topLevelBuiltins = map mapping . filter isTopLevel <$> builtinsList
 
 builtins :: MonadBuiltins e m => m (ValueSet m)
-builtins = M.fromList . map mapping <$> builtinsList
+builtins = attrsetFromList
+    -- jww (2018-04-14): Record the file/line/col of where this builtin was
+    -- defined... in the Haskell code!
+    . map (first (\x -> ([x], Nothing)) mapping)
+    <$> builtinsList
 
 data BuiltinType = Normal | TopLevel
 data Builtin m = Builtin
@@ -247,9 +252,9 @@ foldNixPath f z = do
 
 nixPath :: MonadBuiltins e m => m (NValue m)
 nixPath = fmap NVList $ flip foldNixPath [] $ \p mn rest -> pure $
-    (valueThunk . flip NVSet M.empty . M.fromList $
-        [ ("path",   valueThunk $ NVPath p)
-        , ("prefix", valueThunk $
+    (valueThunk . NVSet . attrSetFromList $
+        [ ([("path", Nothing)],   valueThunk $ NVPath p)
+        , ([("prefix", Nothing)], valueThunk $
               NVStr (Text.pack (fromMaybe "" mn)) mempty) ]) : rest
 
 toString :: MonadBuiltins e m => NThunk m -> m (NValue m)
@@ -260,23 +265,24 @@ toString str = do
 hasAttr :: MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
 hasAttr x y = force x $ \x' -> force y $ \y' -> case (x', y') of
     (NVStr key _, NVSet aset _) ->
-        return . NVConstant . NBool $ M.member key aset
+        return . NVConstant . NBool $ undefined -- M.member key aset
     (x, y) -> throwError $ "Invalid types for builtin.hasAttr: "
                  ++ show (x, y)
 
 getAttr :: MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
 getAttr x y = force x $ \x' -> force y $ \y' -> case (x', y') of
-    (NVStr key _, NVSet aset _) -> case M.lookup key aset of
+    (NVStr key _, NVSet aset) -> case keyLookup key aset of
         Nothing -> throwError $ "getAttr: field does not exist: "
                       ++ Text.unpack key
-        Just action -> force action pure
+        Just (Left action) -> return $ embedAttrSet action
+        Just (Right action) -> force action pure
     (x, y) -> throwError $ "Invalid types for builtin.getAttr: "
                  ++ show (x, y)
 
 unsafeGetAttrPos :: forall e m. MonadBuiltins e m
                  => NThunk m -> NThunk m -> m (NValue m)
 unsafeGetAttrPos x y = force x $ \x' -> force y $ \y' -> case (x', y') of
-    (NVStr key _, NVSet _ apos) -> case M.lookup key apos of
+    (NVStr key _, NVSet aset) -> case lookupPos key apos of
         Nothing ->
             throwError $ "unsafeGetAttrPos: field '" ++ Text.unpack key
                 ++ "' does not exist in attr set: " ++ show apos
@@ -416,7 +422,9 @@ splitDrvName s =
     in (Text.intercalate sep namePieces, Text.intercalate sep versionPieces)
 
 parseDrvName :: Applicative m => Text -> Prim m (AttrSet Text)
-parseDrvName s = Prim $ pure $ M.fromList [("name", name), ("version", version)]
+parseDrvName s = Prim $ pure $ attrsetFromList
+        [ ([("name", Nothing)], name)
+        , ([("version", Nothing)], version) ]
     where (name, version) = splitDrvName s
 
 match_ :: forall e m. MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
@@ -472,13 +480,13 @@ substring start len str = Prim $
 
 attrNames :: MonadBuiltins e m => NThunk m -> m (NValue m)
 attrNames = flip force $ \case
-    NVSet m _ -> toValue $ sort $ M.keys m
+    NVSet m -> toValue $ undefined -- sort $ M.keys m
     v -> throwError $ "builtins.attrNames: Expected attribute set, got "
             ++ show v
 
 attrValues :: MonadBuiltins e m => NThunk m -> m (NValue m)
 attrValues = flip force $ \case
-    NVSet m _ -> return $ NVList $ fmap snd $ sortOn fst $ M.toList m
+    NVSet m -> return $ NVList $ undefined -- fmap snd $ sortOn fst $ M.toList m
     v -> throwError $ "builtins.attrValues: Expected attribute set, got "
             ++ show v
 
@@ -496,7 +504,7 @@ catAttrs :: MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
 catAttrs attrName lt = force lt $ \case
     NVList l -> fmap (NVList . catMaybes) $ forM l $ flip force $ \case
         NVSet m _ -> force attrName $ \case
-            NVStr n _ -> return $ M.lookup n m
+            NVStr n _ -> return $ undefined -- M.lookup n m
             v -> throwError $ "builtins.catAttrs: Expected a string, got "
                     ++ show v
         v -> throwError $ "builtins.catAttrs: Expected a set, got "
@@ -588,16 +596,16 @@ replaceStrings from to s = Prim $ do
 removeAttrs :: MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
 removeAttrs set list = fromThunk @[Text] list $ \toRemove ->
     force set $ \case
-        NVSet m p -> return $ NVSet (go m toRemove) (go p toRemove)
+        NVSet m -> return $ NVSet (go m toRemove)
         v -> throwError $ "removeAttrs: expected set, got " ++ show v
   where
-    go = foldl' (flip M.delete)
+    go = undefined -- foldl' (flip M.delete)
 
 intersectAttrs :: MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
 intersectAttrs set1 set2 = force set1 $ \set1' -> force set2 $ \set2' ->
     case (set1', set2') of
-        (NVSet s1 p1, NVSet s2 p2) ->
-            return $ NVSet (s2 `M.intersection` s1) (p2 `M.intersection` p1)
+        (NVSet s1, NVSet s2) ->
+            return $ undefined -- NVSet (s2 `M.intersection` s1) (p2 `M.intersection` p1)
         (v1, v2) ->
             throwError $ "builtins.intersectAttrs: expected two sets, got "
                 ++ show v1 ++ " and " ++ show v2
@@ -607,10 +615,10 @@ functionArgs fun = force fun $ \case
     NVClosure p _ ->
         -- jww (2018-04-05): Should we preserve the location where the
         -- function arguments were declared for __unsafeGetAttrPos?
-        return $ flip NVSet M.empty $ valueThunk . NVConstant . NBool <$>
+        return $ NVSet $ valueThunk . NVConstant . NBool <$>
             case p of
-                Param name -> M.singleton name False
-                ParamSet s _ _ -> isJust <$> M.fromList s
+                Param name -> singletonAttrSet name Nothing False
+                ParamSet s _ _ -> undefined -- isJust <$> M.fromList s
     v -> throwError $ "builtins.functionArgs: expected function, got "
             ++ show v
 
@@ -630,7 +638,7 @@ pathExists_ = flip force $ \case
 
 isAttrs :: MonadBuiltins e m => NThunk m -> m (NValue m)
 isAttrs = flip force $ \case
-    NVSet _ _ -> toValue True
+    NVSet _ -> toValue True
     _ -> toValue False
 
 isList :: MonadBuiltins e m => NThunk m -> m (NValue m)
@@ -675,14 +683,14 @@ throw_ = flip force $ \case
 
 import_ :: MonadBuiltins e m => NThunk m -> m (NValue m)
 import_ = flip force $ \case
-    NVPath p -> importPath M.empty p
-    NVStr p _ -> importPath M.empty $ Text.unpack p
+    NVPath p -> undefined -- importPath M.empty p
+    NVStr p _ -> undefined -- importPath M.empty $ Text.unpack p
     v -> throwError $ "import: expected path, got " ++ show v
 
 scopedImport :: MonadBuiltins e m => NThunk m -> NThunk m -> m (NValue m)
 scopedImport aset path = force aset $ \aset' -> force path $ \path' ->
     case (aset', path') of
-        (NVSet s _, NVPath p) -> importPath s p
+        (NVSet s, NVPath p) -> importPath s p
         (s, p) -> throwError $ "scopedImport: expected a set and a path, got "
                      ++ show s ++ " and " ++ show p
 
@@ -733,11 +741,13 @@ concatLists = flip force $ \case
 
 listToAttrs :: MonadBuiltins e m => NThunk m -> m (NValue m)
 listToAttrs = flip force $ \case
-    NVList l -> fmap (flip NVSet M.empty . M.fromList . reverse) $
+    NVList l -> fmap (NVSet . attrsetFromList . reverse) $
         forM l $ flip force $ \case
-            NVSet s _ -> case (M.lookup "name" s, M.lookup "value" s) of
-                (Just name, Just value) -> force name $ \case
-                    NVStr n _ -> return (n, value)
+            NVSet s -> case (keyLookup "name" s, keyLookup "value" s) of
+                (Just (Right name), Just (Right value)) -> force name $ \case
+                    NVStr n _ ->
+                        -- jww (2018-04-14): This is wrong!
+                        return (([n], Nothing), value)
                     v -> throwError $
                             "builtins.listToAttrs: expected name to be a string, got "
                             ++ show v
@@ -800,7 +810,7 @@ readDir_ pathThunk = do
                 | isSymbolicLink s -> FileType_Symlink
                 | otherwise -> FileType_Unknown
         pure (Text.pack item, t)
-    toValue $ M.fromList itemsWithTypes
+    toValue $ undefined -- M.fromList itemsWithTypes
 
 fromJSON :: MonadBuiltins e m => NThunk m -> m (NValue m)
 fromJSON t = fromThunk t $ \encoded ->
@@ -822,7 +832,7 @@ typeOf t = force t $ \v -> toValue @Text $ case v of
         NUri _ -> "string" --TODO: Should we get rid of NUri?
     NVStr _ _ -> "string"
     NVList _ -> "list"
-    NVSet _ _ -> "set"
+    NVSet _ -> "set"
     NVClosure {} -> "lambda"
     NVPath _ -> "path"
     NVBuiltin _ _ -> "lambda"
@@ -830,22 +840,24 @@ typeOf t = force t $ \v -> toValue @Text $ case v of
 tryEval :: forall e m. MonadBuiltins e m => NThunk m -> m (NValue m)
 tryEval e = catch (force e (pure . onSuccess)) (pure . onError)
   where
-    onSuccess v = flip NVSet M.empty $ M.fromList
-        [ ("success", valueThunk (NVConstant (NBool True)))
-        , ("value", valueThunk v)
+    onSuccess v = NVSet $ attrsetFromList
+        [ ([("success", Nothing)], valueThunk (NVConstant (NBool True)))
+        , ([("value", Nothing)], valueThunk v)
         ]
 
     onError :: SomeException -> NValue m
-    onError _ = flip NVSet M.empty $ M.fromList
-        [ ("success", valueThunk (NVConstant (NBool False)))
-        , ("value", valueThunk (NVConstant (NBool False)))
+    onError _ = NVSet $ attrsetFromList
+        [ ([("success", Nothing)], valueThunk (NVConstant (NBool False)))
+        , ([("value", Nothing)], valueThunk (NVConstant (NBool False)))
         ]
 
 fetchTarball :: forall e m. MonadBuiltins e m => NThunk m -> m (NValue m)
 fetchTarball = flip force $ \case
-    NVSet s _ -> case M.lookup "url" s of
+    NVSet s -> case keyLookup "url" s of
+        Just (Right url) -> force url (go (undefined {- keyLookup "sha256" s -}))
+        Just (Left _) ->
+            throwError "builtins.fetchTarball: Missing url attribute should a string"
         Nothing -> throwError "builtins.fetchTarball: Missing url attribute"
-        Just url -> force url (go (M.lookup "sha256" s))
     v@NVStr {} -> go Nothing v
     v@(NVConstant (NUri _)) -> go Nothing v
     v -> throwError $ "builtins.fetchTarball: Expected URI or set, got "
@@ -891,8 +903,9 @@ partition_ f = flip force $ \case
       selection <- traverse match l
       let (right, wrong) = partition fst selection
       let makeSide = valueThunk . NVList . map snd
-      return $ flip NVSet M.empty $
-          M.fromList [("right", makeSide right), ("wrong", makeSide wrong)]
+      return $ NVSet $
+          attrsetFromList [ ([("right", Nothing)], makeSide right)
+                          , ([("wrong", Nothing)], makeSide wrong)]
     v -> throwError $ "partition: Expected list, got " ++ show v
 
 currentSystem :: MonadBuiltins e m => m (NValue m)
@@ -925,14 +938,14 @@ instance ToNix Integer where
     toValue = return . NVConstant . NInt
 
 instance ToNix a => ToNix (AttrSet a) where
-    toValue m = flip NVSet M.empty <$> traverse (thunk . toValue) m
+    toValue m = NVSet <$> traverse (thunk . toValue) m
 
 instance ToNix a => ToNix [a] where
     toValue m = NVList <$> traverse (thunk . toValue) m
 
 instance ToNix A.Value where
     toValue = \case
-        A.Object m -> flip NVSet M.empty <$> traverse (thunk . toValue) m
+        A.Object m -> NVSet <$> traverse (thunk . toValue) m
         A.Array l -> NVList <$> traverse (thunk . toValue) (V.toList l)
         A.String s -> pure $ NVStr s mempty
         A.Number n -> pure $ NVConstant $ case floatingOrInteger n of
@@ -985,9 +998,18 @@ instance FromNix a => FromNix [a] where
         NVList l -> traverse (`force` fromValue) l
         v -> throwError $ "fromValue: Expected list, got " ++ show v
 
+instance FromNix a => FromNix (AttrSet a) where
+    fromValue = \case
+        NVSet s -> traverse (`force` fromValue) s
+        v -> throwError $ "fromValue: Expected set, got " ++ show v
+
 toEncodingSorted :: A.Value -> A.Encoding
 toEncodingSorted = \case
-    A.Object m -> A.pairs $ mconcat $ fmap (\(k, v) -> A.pair k $ toEncodingSorted v) $ sortOn fst $ M.toList m
+    A.Object m ->
+        A.pairs $ mconcat
+                $ fmap (\(k, v) -> A.pair k $ toEncodingSorted v)
+                $ sortOn fst
+                $ undefined -- M.toList m
     A.Array l -> A.list toEncodingSorted $ V.toList l
     v -> A.toEncoding v
 
@@ -1001,7 +1023,7 @@ instance FromNix A.Value where
             NUri u -> toJSON u
         NVStr s _ -> pure $ toJSON s
         NVList l -> A.Array . V.fromList <$> traverse (`force` fromValue) l
-        NVSet m _ -> A.Object <$> traverse (`force` fromValue) m
+        NVSet m -> undefined -- A.Object <$> traverse (`force` fromValue) m
         NVClosure {} -> throwError "cannot convert a function to JSON"
         NVPath p -> toJSON . unStorePath <$> addPath p
         NVBuiltin _ _ -> throwError "cannot convert a built-in function to JSON"

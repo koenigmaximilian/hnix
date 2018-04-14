@@ -12,7 +12,6 @@ import           Control.Applicative
 import           Control.Monad.Catch
 import           Control.Monad.Fix
 import           Control.Monad.IO.Class
-import qualified Data.HashMap.Lazy as M
 import qualified Data.Text as Text
 import           Nix.Builtins
 import           Nix.Effects

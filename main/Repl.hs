@@ -19,13 +19,12 @@
 module Repl where
 
 import           Nix
+import           Nix.AttrSet
 import           Nix.Eval
 import           Nix.Scope
 import qualified Nix.Type.Env as Env
 import           Nix.Type.Infer
 
-import qualified Data.HashMap.Lazy as M
-import qualified Data.Map as Map
 import           Data.Monoid
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text

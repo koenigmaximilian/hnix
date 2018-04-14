@@ -36,15 +36,15 @@ import qualified Data.ByteString as BS
 import           Data.Coerce
 import           Data.Fix
 import           Data.Functor.Compose
-import           Data.HashMap.Lazy (HashMap)
-import qualified Data.HashMap.Lazy as M
 import           Data.IORef
 import           Data.List
 import           Data.List.Split
 import           Data.Maybe (mapMaybe)
+import           Data.Monoid
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Context
 import           Nix.Convert
 import           Nix.Effects
@@ -118,14 +118,9 @@ instance ConvertValue (NValue m) [NThunk m] where
     ofVal = NVList
     wantVal = \case NVList l -> Just l; _ -> Nothing
 
-instance ConvertValue (NValue m)
-      (AttrSet (NThunk m), AttrSet SourcePos) where
-    ofVal (s, p) = NVSet s p
-    wantVal = \case NVSet s p -> Just (s, p); _ -> Nothing
-
 instance ConvertValue (NValue m) (AttrSet (NThunk m)) where
-    ofVal = flip NVSet M.empty
-    wantVal = \case NVSet s _ -> Just s; _ -> Nothing
+    ofVal s = NVSet s
+    wantVal = \case NVSet s -> Just s; _ -> Nothing
 
 instance MonadNix e m => MonadThunk (NValue m) (NThunk m) m where
     thunk = fmap coerce . buildThunk
@@ -140,7 +135,7 @@ instance MonadNix e m => MonadEval (NValue m) m where
         Compose (Ann (SrcSpan delta _) _):_ <-
             asks (mapMaybe (either (const Nothing) Just)
                  . view @_ @Frames hasLens)
-        return $ posFromSourcePos delta
+        return $ undefined -- posFromSourcePos delta
 
     evalConstant    = pure . NVConstant
     evalString      = pure . uncurry NVStr
@@ -196,7 +191,7 @@ callFunc fun arg = case fun of
     NVBuiltin name f -> do
         traceM $ "callFunc:NVBuiltin " ++ name
         f =<< thunk arg
-    s@(NVSet m _) | Just f <- M.lookup "__functor" m -> do
+    s@(NVSet m) | Just (Right f) <- keyLookup "__functor" m -> do
         traceM "callFunc:__functor"
         force f $ \f' -> f' `callFunc` pure s >>= \g' -> g' `callFunc` arg
     x -> throwError $ "Attempt to call non-function: " ++ show x
@@ -302,8 +297,8 @@ execBinaryOp op larg rarg = do
             NNEq  -> ofVal . not <$> valueEq (NVStr "" mempty) rval
             _ -> nverr unsupportedTypes
 
-        (NVSet ls lp, NVSet rs rp) -> case op of
-            NUpdate -> pure $ NVSet (rs `M.union` ls) (rp `M.union` lp)
+        (NVSet ls, NVSet rs) -> case op of
+            NUpdate -> pure $ NVSet $ rs <> ls
             NEq     -> ofVal <$> valueEq lval rval
             NNEq    -> ofVal . not <$> valueEq lval rval
             _ -> nverr unsupportedTypes
@@ -363,6 +358,9 @@ instance MonadCatch m => MonadCatch (Lazy m) where
 instance MonadThrow m => MonadThrow (Lazy m) where
     throwM = Lazy . throwM
 
+instance MonadNix e m => AttrSetEmbeds (NThunk m) where
+    embedAttrSet v = value (NVSet v)
+
 instance (MonadFix m, MonadCatch m, MonadThrow m, MonadIO m)
       => MonadEffects (Lazy m) where
     addPath path = do
@@ -420,7 +418,7 @@ instance (MonadFix m, MonadCatch m, MonadThrow m, MonadIO m)
                     -- Use this cookie so that when we evaluate the next
                     -- import, we'll remember which directory its containing
                     -- file was in.
-                    pushScope (M.singleton "__cur_file" ref)
+                    pushScope (singletonAttrSet "__cur_file" Nothing ref)
                         (pushScope scope (framedEvalExpr Eval.eval expr))
 
     getEnvVar = liftIO . lookupEnv
@@ -506,16 +504,16 @@ findEnvPathM name = do
   where
     go :: Maybe FilePath -> NThunk m -> m (Maybe FilePath)
     go p@(Just _) _ = pure p
-    go Nothing l = fromNix l >>= \(s :: HashMap Text (NThunk m)) ->
-        case M.lookup "path" s of
-            Just p -> fromNix p >>= \(Path path) ->
-                case M.lookup "prefix" s of
-                    Nothing -> tryPath path Nothing
-                    Just pf -> fromNixMay pf >>= \case
+    go Nothing l = fromNix l >>= \(s :: AttrSet (NThunk m)) ->
+        case keyLookup "path" s of
+            Just (Right p) -> fromNix p >>= \(Path path) ->
+                case keyLookup "prefix" s of
+                    Just (Right pf) -> fromNixMay pf >>= \case
                         Just (pfx :: Text) | not (Text.null pfx) ->
                             tryPath path (Just (Text.unpack pfx))
                         _ -> tryPath path Nothing
-            Nothing ->
+                    _ -> tryPath path Nothing
+            _ ->
                 throwError $ "__nixPath must be a list of attr sets"
                     ++ " with 'path' elements, but saw: " ++ show s
 

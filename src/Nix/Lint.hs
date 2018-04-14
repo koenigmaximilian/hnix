@@ -30,13 +30,12 @@ import           Control.Monad.ST.Unsafe
 import           Control.Monad.Trans.Reader
 import qualified Data.ByteString as BS
 import           Data.Coerce
-import           Data.HashMap.Lazy (HashMap)
-import qualified Data.HashMap.Lazy as M
 import           Data.List
 import           Data.STRef
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Context
 import           Nix.Eval
 import qualified Nix.Eval as Eval
@@ -59,7 +58,7 @@ data NTypeF (m :: * -> *) r
     = TConstant [TAtom]
     | TStr
     | TList r
-    | TSet (Maybe (HashMap Text r))
+    | TSet (Maybe (AttrSet r))
     | TClosure (Params ()) (m (Symbolic m) -> m (Symbolic m))
     | TPath
     | TBuiltin String (SThunk m -> m (Symbolic m))
@@ -92,6 +91,12 @@ data NSymbolicF r
     deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 newtype SThunk m = SThunk { getSThunk :: Thunk m (Symbolic m) }
+
+instance Show (SThunk (Lint s)) where
+    show _ = "<thunk>"
+
+instance AttrSetEmbeds (SThunk (Lint s)) where
+    embedAttrSet s = svalueThunk undefined
 
 sthunk :: MonadVar m => m (Symbolic m) -> m (SThunk m)
 sthunk = fmap coerce . buildThunk
@@ -177,7 +182,8 @@ merge context = go
             (TList m :) <$> go xs ys
         (TSet x, TSet Nothing) -> (TSet x :) <$> go xs ys
         (TSet Nothing, TSet x) -> (TSet x :) <$> go xs ys
-        (TSet (Just l), TSet (Just r)) -> do
+        (TSet (Just l), TSet (Just r)) -> undefined -- do
+{-
             m <- sequenceA $ M.intersectionWith
                 (\i j -> i >>= \i' -> j >>= \j' ->
                         sforce i' $ \i'' -> sforce j' $ \j'' ->
@@ -186,6 +192,7 @@ merge context = go
             if M.null m
                 then go xs ys
                 else (TSet (Just m) :) <$> go xs ys
+-}
         (TClosure {}, TClosure {}) ->
             throwError "Cannot unify functions"
         (TBuiltin _ _, TBuiltin _ _) ->
@@ -268,11 +275,6 @@ instance ConvertValue (Symbolic m) [SThunk m] where
     ofVal = const $ error "NYI"
     wantVal = const $ error "NYI"
 
-instance ConvertValue (Symbolic m)
-      (AttrSet (SThunk m), AttrSet SourcePos) where
-    ofVal = const $ error "Should never need to make symbolic from set pair"
-    wantVal = const Nothing
-
 instance ConvertValue (Symbolic m) (AttrSet (SThunk m)) where
     ofVal = const $ error "Should never need to make symbolic from attrset"
     wantVal = const Nothing
@@ -294,7 +296,8 @@ instance MonadLint e m => MonadEval (Symbolic m) m where
     freeVariable var = symerr $
         "Undefined variable '" ++ Text.unpack var ++ "'"
 
-    evalCurPos = do
+    evalCurPos = undefined -- do
+{-
         f <- value <$> mkSymbolic [TPath]
         l <- value <$> mkSymbolic [TConstant [TInt]]
         c <- value <$> mkSymbolic [TConstant [TInt]]
@@ -304,6 +307,7 @@ instance MonadLint e m => MonadEval (Symbolic m) m where
             [ ("file", f)
             , ("line", l)
             , ("col",  c) ]
+-}
 
     evalConstant c  = mkSymbolic [TConstant [go c]]
       where
@@ -405,7 +409,7 @@ lintBinaryOp op lsym rarg = do
 infixl 1 `lintApp`
 lintApp :: forall e m. MonadLint e m
         => NExprF () -> Symbolic m -> m (Symbolic m)
-        -> m (HashMap VarName (Symbolic m), Symbolic m)
+        -> m (AttrSet (Symbolic m), Symbolic m)
 lintApp context fun arg = unpackSymbolic fun >>= \case
     NAny -> throwError "Cannot apply something not known to be a function"
     NMany xs -> do

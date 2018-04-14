@@ -10,10 +10,10 @@
 module Nix.Normal where
 
 import           Data.Fix
-import qualified Data.HashMap.Lazy as M
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Effects
 import           Nix.Stack
 import           Nix.Thunk
@@ -27,7 +27,7 @@ normalFormBy k = \case
     NVConstant a     -> return $ Fix $ NVConstant a
     NVStr t s        -> return $ Fix $ NVStr t s
     NVList l         -> Fix . NVList <$> traverse (`k` normalFormBy k) l
-    NVSet s p        -> Fix . flip NVSet p <$> traverse (`k` normalFormBy k) s
+    NVSet s          -> Fix . NVSet  <$> traverse (`k` normalFormBy k) s
     NVClosure p f    -> return $ Fix $ NVClosure p f
     NVPath fp        -> return $ Fix $ NVPath fp
     NVBuiltin name f -> return $ Fix $ NVBuiltin name f
@@ -41,10 +41,8 @@ embed :: forall m. (MonadThunk (NValue m) (NThunk m) m)
 embed (Fix x) = case x of
     NVConstant a     -> return $ NVConstant a
     NVStr t s        -> return $ NVStr t s
-    NVList l         -> NVList . fmap (value @_ @_ @m)
-        <$> traverse embed l
-    NVSet s p        -> flip NVSet p . fmap (value @_ @_ @m)
-        <$> traverse embed s
+    NVList l         -> NVList . fmap (value @_ @_ @m) <$> traverse embed l
+    NVSet s          -> NVSet  . fmap (value @_ @_ @m) <$> traverse embed s
     NVClosure p f    -> return $ NVClosure p f
     NVPath fp        -> return $ NVPath fp
     NVBuiltin name f -> return $ NVBuiltin name f
@@ -57,10 +55,10 @@ valueText addPathsToStore = cata phi
     phi (NVConstant a)    = pure (atomText a, mempty)
     phi (NVStr t c)       = pure (t, c)
     phi (NVList _)        = throwError "Cannot coerce a list to a string"
-    phi (NVSet s _)
-      | Just asString <-
+    phi (NVSet s)
+      | Just (Right asString) <-
         -- TODO: Should this be run through valueText recursively?
-        M.lookup "__asString" s = asString
+        keyLookup "__asString" s = asString
       | otherwise = throwError "Cannot coerce a set to a string"
     phi NVClosure {} = throwError "Cannot coerce a function to a string"
     phi (NVPath originalPath)

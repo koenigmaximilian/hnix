@@ -2,12 +2,13 @@
 
 module Nix.XML where
 
+import           Control.Arrow (first)
 import           Data.Fix
-import qualified Data.HashMap.Lazy as M
-import           Data.List
+import           Data.List (sortOn)
 import           Data.Ord
 import qualified Data.Text as Text
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Expr.Types
 import           Nix.Value
 import           Text.XML.Light
@@ -29,11 +30,11 @@ toXML = (.) ((++ "\n") .
     NVStr t _ -> mkElem "string" "value" (Text.unpack t)
     NVList l  -> Element (unqual "list") [] (Elem <$> l) Nothing
 
-    NVSet s _ -> Element (unqual "attrs") []
+    NVSet s -> Element (unqual "attrs") []
         (map (\(k, v) -> Elem (Element (unqual "attr")
                                       [Attr (unqual "name") (Text.unpack k)]
                                       [Elem v] Nothing))
-             (sortBy (comparing fst) $ M.toList s)) Nothing
+             (sortOn fst $ undefined $ attrsetToList s)) Nothing
 
     NVClosure p _  -> Element (unqual "function") [] (paramsXML p) Nothing
     NVPath fp -> mkElem "path" "value" fp

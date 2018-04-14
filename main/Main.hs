@@ -16,7 +16,6 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.ST
 import           Data.Fix
-import qualified Data.HashMap.Lazy as M
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import qualified Data.Text.Read as Text

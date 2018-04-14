@@ -2,8 +2,8 @@ module Nix.Effects where
 
 import Data.Text (Text)
 import System.Posix.Files
+import Nix.AttrSet
 import Nix.Value
-import Nix.Utils
 
 -- | A path into the nix store
 newtype StorePath = StorePath { unStorePath :: FilePath }

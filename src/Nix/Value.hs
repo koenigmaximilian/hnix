@@ -12,25 +12,27 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Nix.Value where
 
-import           Control.Monad
-import           Control.Monad.Trans.Class
-import           Control.Monad.Trans.Except
-import           Data.Align
-import           Data.Fix
-import qualified Data.HashMap.Lazy as M
-import           Data.Monoid (appEndo)
-import           Data.Text (Text, pack)
-import           Data.These
-import           Data.Typeable (Typeable)
-import           GHC.Generics
-import           Nix.Atoms
-import           Nix.Expr.Types
-import           Nix.Expr.Types.Annotated (SourcePos(..), unPos)
-import           Nix.Thunk
-import           Nix.Utils
+import Control.Monad
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Except
+import Data.Align
+import Data.Fix
+import Data.Monoid (appEndo)
+import Data.Text (Text, pack)
+import Data.These
+import Data.Typeable (Typeable)
+import GHC.Generics
+import Nix.Atoms
+import Nix.AttrSet
+import Nix.Expr.Types
+import Nix.Expr.Types.Annotated (SourcePos(..), unPos)
+import {-# SOURCE #-} Nix.Stack
+import Nix.Thunk
+import Nix.Utils
 
 -- | An 'NValue' is the most reduced form of an 'NExpr' after evaluation
 -- is completed.
@@ -41,7 +43,10 @@ data NValueF m r
     | NVStr Text (DList Text)
     | NVPath FilePath
     | NVList [r]
-    | NVSet (AttrSet r) (AttrSet SourcePos)
+    | NVSet (AttrSet r)
+      -- ^ An requirement of attrsets kept in NVSet is that their head is
+      --   always 'Free' and never 'Pure'. Errors will be raised in several
+      --   places if the latter ever happen.
     | NVClosure (Params ()) (m (NValue m) -> m (NValue m))
       -- ^ A function is a closed set of parameters representing the "call
       --   signature", used at application time to check the type of arguments
@@ -77,7 +82,7 @@ instance Show (NValueF m (Fix (NValueF m))) where
       go (NVConstant atom)    = showsCon1 "NVConstant" atom
       go (NVStr text context) = showsCon2 "NVStr"      text (appEndo context [])
       go (NVList     list)    = showsCon1 "NVList"     list
-      go (NVSet attrs _)      = showsCon1 "NVSet"      attrs
+      go (NVSet attrs)        = showsCon1 "NVSet"      attrs
       go (NVClosure p _)      = showsCon1 "NVClosure"  p
       go (NVPath p)           = showsCon1 "NVPath"     p
       go (NVBuiltin name _)   = showsCon1 "NVBuiltin"  name
@@ -95,6 +100,16 @@ instance Show (NValueF m (Fix (NValueF m))) where
               . showString " "
               . showsPrec 11 b
 
+instance (Framed e m, MonadFile m, MonadVar m,
+          MonadThunk (NValue m) (NThunk m) m, Show (NValue m))
+      => AttrSetProjects m (NThunk m) where
+    projectAttrSetMay t = force @(NValue m) @(NThunk m) @m t $ \case
+        NVSet m -> pure $ Just m
+        _ -> pure Nothing
+    projectAttrSet t = force @(NValue m) @(NThunk m) @m t $ \case
+        NVSet m -> pure m
+        v -> throwError $ "Expected a set, but saw: " ++ show v
+
 builtin :: Monad m => String -> (NThunk m -> m (NValue m)) -> m (NValue m)
 builtin name f = return $ NVBuiltin name f
 
@@ -110,14 +125,15 @@ builtin3 name f =
 
 posFromSourcePos
     :: forall m v t.
-        (MonadThunk v t m, ConvertValue v Int, ConvertValue v Text,
+        (MonadThunk v t m, AttrSetProjects m t,
+         ConvertValue v Int, ConvertValue v Text,
          ConvertValue v (AttrSet t))
-    => SourcePos -> v
-posFromSourcePos (SourcePos f l c) =
-    ofVal $ M.fromList
-        [ ("file" :: Text, value @_ @_ @m $ ofVal (pack f))
-        , ("line",        value @_ @_ @m $ ofVal (unPos l))
-        , ("column",      value @_ @_ @m $ ofVal (unPos c))
+    => SourcePos -> m v
+posFromSourcePos pos@(SourcePos f l c) =
+    ofVal <$> attrsetFromList
+        [ ([("file",   Just pos)], value @_ @_ @m $ ofVal (pack f))
+        , ([("line",   Just pos)], value @_ @_ @m $ ofVal (unPos l))
+        , ([("column", Just pos)], value @_ @_ @m $ ofVal (unPos c))
         ]
 
 mkBoolV :: Monad m => Bool -> m (NValue m)
@@ -133,7 +149,8 @@ isClosureNF :: Monad m => NValueNF m -> Bool
 isClosureNF (Fix NVClosure {}) = True
 isClosureNF _ = False
 
-thunkEq :: MonadThunk (NValue m) (NThunk m) m
+thunkEq :: (Framed e m, MonadFile m, MonadVar m,
+           MonadThunk (NValue m) (NThunk m) m, Show (NValue m))
         => NThunk m -> NThunk m -> m Bool
 thunkEq lt rt = force lt $ \lv -> force rt $ \rv -> valueEq lv rv
 
@@ -152,13 +169,15 @@ alignEqM eq fa fb = fmap (either (const False) (const True)) $ runExceptT $ do
         _ -> throwE ()
     forM_ pairs $ \(a, b) -> guard =<< lift (eq a b)
 
-isDerivation :: MonadThunk (NValue m) (NThunk m) m
+isDerivation :: (Framed e m, MonadFile m, MonadVar m,
+                MonadThunk (NValue m) (NThunk m) m, Show (NValue m))
              => AttrSet (NThunk m) -> m Bool
-isDerivation m = case M.lookup "type" m of
-    Nothing -> pure False
-    Just t -> force t $ valueEq (NVStr "derivation" mempty)
+isDerivation m = case keyLookup "type" m of
+    Just (Right t) -> force t $ valueEq (NVStr "derivation" mempty)
+    _ -> pure False
 
-valueEq :: MonadThunk (NValue m) (NThunk m) m
+valueEq :: (Framed e m, MonadFile m, MonadVar m,
+           MonadThunk (NValue m) (NThunk m) m, Show (NValue m))
         => NValue m -> NValue m -> m Bool
 valueEq l r = case (l, r) of
     (NVStr ls _, NVConstant (NUri ru)) -> pure $ ls == ru
@@ -168,13 +187,15 @@ valueEq l r = case (l, r) of
     (NVStr ls _, NVConstant NNull) -> pure $ ls == ""
     (NVConstant NNull, NVStr rs _) -> pure $ "" == rs
     (NVList ls, NVList rs) -> alignEqM thunkEq ls rs
-    (NVSet lm _, NVSet rm _) -> do
-        let compareAttrs = alignEqM thunkEq lm rm
+    (NVSet lm, NVSet rm) -> do
+        let compareAttrs = attrsetCompare thunkEq lm rm
         isDerivation lm >>= \case
             True -> isDerivation rm >>= \case
-                True | Just lp <- M.lookup "outPath" lm
-                     , Just rp <- M.lookup "outPath" rm
-                       -> thunkEq lp rp
+                True -> case (keyLookup "outPath" lm,
+                             keyLookup "outPath" rm) of
+                           (Just (Right lp), Just (Right rp)) ->
+                               thunkEq lp rp
+                           _ -> compareAttrs
                 _ -> compareAttrs
             _ -> compareAttrs
     (NVPath lp, NVPath rp) -> pure $ lp == rp

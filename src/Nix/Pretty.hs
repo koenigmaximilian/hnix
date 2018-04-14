@@ -10,21 +10,20 @@ module Nix.Pretty where
 
 import           Control.Monad
 import           Data.Fix
-import           Data.HashMap.Lazy (toList)
-import qualified Data.HashMap.Lazy as M
 import qualified Data.HashSet as HashSet
 import           Data.List (isPrefixOf, sort)
 import           Data.Maybe (isJust)
-import           Data.Text (pack, unpack, replace, strip)
+import           Data.Text (Text, pack, unpack, replace, strip)
 import qualified Data.Text as Text
 import           Nix.Atoms
+import           Nix.AttrSet
 import           Nix.Expr
-import           Nix.Value
 import           Nix.Parser.Library (reservedNames)
 import           Nix.Parser.Operators
 import           Nix.StringOperations
 import           Nix.Thunk
 import           Nix.Utils hiding ((<$>))
+import           Nix.Value
 import           Prelude hiding ((<$>))
 import           Text.PrettyPrint.ANSI.Leijen
 
@@ -195,6 +194,9 @@ prettyNix = withoutParens . cata phi where
 
   recPrefix = text "rec" <> space
 
+attrPath :: [(Text, Maybe SourcePos)] -> NAttrPath r
+attrPath = map (uncurry StaticKey)
+
 prettyNixValue :: Functor m => NValueNF m -> Doc
 prettyNixValue = prettyNix . valueToExpr
   where valueToExpr :: Functor m => NValueNF m -> NExpr
@@ -203,11 +205,11 @@ prettyNixValue = prettyNix . valueToExpr
         go (NVConstant a) = NConstant a
         go (NVStr t _) = NStr (DoubleQuoted [Plain t])
         go (NVList l) = NList l
-        go (NVSet s p) = NSet [ NamedVar [StaticKey k (M.lookup k p)] v
-                              | (k, v) <- toList s ]
+        go (NVSet s) = NSet [ NamedVar (attrPath k) v
+                            | (k, v) <- attrsetToList s ]
         go (NVClosure _ _) = NSym . pack $ "<closure>"
         go (NVPath p) = NLiteralPath p
-        go (NVBuiltin name _) = NSym $ Text.pack $ "builtins." ++ name
+        go (NVBuiltin name _) = NSym $ pack $ "builtins." ++ name
 
 printNix :: Functor m => NValueNF m -> String
 printNix = cata phi
@@ -215,9 +217,9 @@ printNix = cata phi
         phi (NVConstant a) = unpack $ atomText a
         phi (NVStr t _) = show t
         phi (NVList l) = "[ " ++ unwords l ++ " ]"
-        phi (NVSet s _) =
-            "{ " ++ concat [ unpack k ++ " = " ++ v ++ "; "
-                           | (k, v) <- sort $ toList s ] ++ "}"
+        phi (NVSet s) =
+            "{ " ++ concat [ renderPath k ++ " = " ++ v ++ "; "
+                           | (k, v) <- sort $ attrsetToList s ] ++ "}"
         phi NVClosure {} = "<<lambda>>"
         phi (NVPath fp) = fp
         phi (NVBuiltin name _) = "<<builtin " ++ name ++ ">>"
