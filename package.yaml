@@ -45,7 +45,7 @@ library:
     - base16-bytestring
     - binary
     - cryptohash
-    - deriving-compato           >= 0.3 && < 0.7
+    - deriving-compato
     - directory
     - hashable
     - megaparsec
